@@ -21,18 +21,22 @@ static uint dma_ch_in_data = 0;
 
 static volatile uint32_t dma_counter_0 = 0;
 static volatile uint32_t dma_counter_1 = 0;
+static volatile uint32_t dma_counter_2 = 0;
 
 static void dma_in_handler() {   
     dma_counter_0++;
     // Figure out which part of the double-buffer we just finished
     // loading.
-    // ### TODO: IS THIS RIGHT?  I WOULD THINK WE'D WANT TO SEE WHERE
-    // ### THE DMA HAD BEEN WRITING TO.
-    if (*((uint32_t**)dma_hw->ch[dma_ch_in_data].read_addr) == audio_buffer) {
+    if (dma_hw->ch[dma_ch_in_data].write_addr == 
+        (uint32_t)audio_buffer) {
         dma_counter_1++;
     }
-    else {
+    else if (dma_hw->ch[dma_ch_in_data].write_addr == 
+        (uint32_t)&(audio_buffer[AUDIO_BUFFER_SIZE])) {
+        dma_counter_2++;
     }
+    // Clear the IRQ status
+    dma_hw->ints0 = 1u << dma_ch_in_data;
 }
 
 int main(int argc, const char** argv) {
@@ -181,9 +185,11 @@ int main(int argc, const char** argv) {
 
     // ----- DMA setup -------------------------------------------
 
-    // The control channel will read between these two addresses:
+    // The control channel will read between these two addresses,
+    // telling the data channel to write to them alternately (i.e.
+    // double-buffer).
     addr_buffer[0] = audio_buffer;
-    addr_buffer[1] = audio_buffer + AUDIO_BUFFER_SIZE;
+    addr_buffer[1] = &(audio_buffer[AUDIO_BUFFER_SIZE]);
     
     dma_ch_in_ctrl = dma_claim_unused_channel(true);
     dma_ch_in_data = dma_claim_unused_channel(true);
@@ -191,20 +197,23 @@ int main(int argc, const char** argv) {
     // Setup the control channel. This channel is only needed to 
     // support the double-buffering behavior. A write by the control
     // channel will trigger the data channel to wake up and 
-    // start to move data.
+    // start to move data out of the PIO RX FIFO.
     dma_channel_config cfg = dma_channel_get_default_config(dma_ch_in_ctrl);
     // The control channel needs to step across the addresses of 
     // the various buffers.
     channel_config_set_read_increment(&cfg, true);
-    // Always writing into the same location
+    // But always writing into the same location
     channel_config_set_write_increment(&cfg, false);
+    // Sanity check before we start making assumptions about the
+    // transfer size.
+    assert(sizeof(uint32_t*) == 4);
     // Configure how many bits are involved in the address rotation.
     // 3 bits are used because we are wrapping through a total of 8 
-    // bytes (two 4-byte addresses)
+    // bytes (two 4-byte addresses).  
+    // The "false" means the read side.
     channel_config_set_ring(&cfg, false, 3);
     // Each address is 32-bits, so that's what we need to transfer 
     // each time.
-    assert(sizeof(uint32_t*) == 4);
     channel_config_set_transfer_data_size(&cfg, DMA_SIZE_32);
     dma_channel_configure(dma_ch_in_ctrl, &cfg, 
         // Here is where we write to (the data channel)
@@ -212,7 +221,7 @@ int main(int argc, const char** argv) {
         &dma_hw->ch[dma_ch_in_data].al2_write_addr_trig,
         // Here is where we read from (the address buffer area)
         addr_buffer, 
-        // Number of transfers to perform
+        // Number of transfers to perform before waiting.
         1, 
         // false means don't start yet
         false);
@@ -220,7 +229,7 @@ int main(int argc, const char** argv) {
     // Setup the data channel.
     cfg = dma_channel_get_default_config(dma_ch_in_data);
     // No increment required because we are always reading from the 
-    // PIO RX FIFO.
+    // PIO RX FIFO every time.
     channel_config_set_read_increment(&cfg, false);
     // We need to increment the write to move across the buffer
     channel_config_set_write_increment(&cfg, true);
@@ -246,7 +255,7 @@ int main(int argc, const char** argv) {
 
     // Enable interrupt when DMA data transfer completes
     dma_channel_set_irq0_enabled(dma_ch_in_data, true);
-    // Bind to the interrupted handler and enable
+    // Bind to the interrupt handler and enable
     irq_set_exclusive_handler(DMA_IRQ_0, dma_in_handler);
     irq_set_enabled(DMA_IRQ_0, true);
 
@@ -263,7 +272,7 @@ int main(int argc, const char** argv) {
         sleep_ms(500);
         gpio_put(LED_PIN, 0);
         sleep_ms(500);
-        printf("dma_counter_0=%d, dma_counter_1=%d\n", dma_counter_0, dma_counter_1);
+        printf("dma_counter_0/1/2=%d/%d/%d\n", dma_counter_0, dma_counter_1, dma_counter_2);
     }
 
     return 0;
