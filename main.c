@@ -1,4 +1,6 @@
 #include <stdio.h>
+#include <math.h>
+
 #include "hardware/clocks.h"
 #include "hardware/dma.h"
 #include "pico/stdlib.h"
@@ -8,7 +10,7 @@
 
 // DMA stuff
 // The *2 accounts for left/right
-#define AUDIO_BUFFER_SIZE (64 * 2)
+#define AUDIO_BUFFER_SIZE (32 * 2)
 // Here is where the actual audio data gets written
 // The *2 accounts for the fact that we are double-buffering.
 static __attribute__((aligned(8))) uint32_t audio_buffer[AUDIO_BUFFER_SIZE * 2];
@@ -20,30 +22,37 @@ static uint dma_ch_in_ctrl = 0;
 static uint dma_ch_in_data = 0;
 
 static volatile uint32_t dma_counter_0 = 0;
-static volatile int32_t dma_counter_1 = 0;
-static volatile int32_t dma_counter_2 = 0;
+
+#define AN_BUFFER_SIZE (256)
+
+static float an_buffer_l[AN_BUFFER_SIZE];
+static float an_buffer_r[AN_BUFFER_SIZE];
+static uint an_buffer_ptr = 0;
 
 static void dma_in_handler() {   
+
     dma_counter_0++;
+
     // Figure out which part of the double-buffer we just finished
-    // loading.
-    if (dma_hw->ch[dma_ch_in_data].write_addr == 
-        (uint32_t)audio_buffer) {
-        // First sample on each side
-        dma_counter_1 = audio_buffer[0];
-        // Shift away the unused bits (sign preserved)
-        dma_counter_1 = dma_counter_1 >> 8;
-        dma_counter_2 = audio_buffer[1];
-        dma_counter_2 = dma_counter_2 >> 8;
+    // loading into.  Notice: the pointer is signed.
+    int32_t* audio_data = 0;
+    if (dma_hw->ch[dma_ch_in_data].write_addr == (uint32_t)audio_buffer) {
+        audio_data = audio_buffer;
+    } else {
+        audio_data = &(audio_buffer[AUDIO_BUFFER_SIZE]);
+
     }
-    else if (dma_hw->ch[dma_ch_in_data].write_addr == 
-        (uint32_t)&(audio_buffer[AUDIO_BUFFER_SIZE])) {
-        // First sample on each side
-        dma_counter_1 = audio_buffer[AUDIO_BUFFER_SIZE + 0];
-        // Shift away the unused bits (sign preserved)
-        dma_counter_1 = dma_counter_1 >> 8;
-        dma_counter_2 = audio_buffer[AUDIO_BUFFER_SIZE + 1];
-        dma_counter_2 = dma_counter_2 >> 8;
+    // Move into analysis buffer
+    for (int i = 0; i < AUDIO_BUFFER_SIZE; i += 2) {
+        // The 24-bit value is left-justified in the 32-bit word, 
+        // so we need to shift right 8. Sign extension is automatic.
+        // TODO: FIGURE OUT WHAT LEFT AND RIGHT ARE
+        an_buffer_l[an_buffer_ptr] = audio_data[i] >> 8;
+        an_buffer_r[an_buffer_ptr] = audio_data[i + 1] >> 8;
+        // Increment and wrap
+        an_buffer_ptr++;
+        if (an_buffer_ptr == AN_BUFFER_SIZE) 
+            an_buffer_ptr = 0;
     }
     // Clear the IRQ status
     dma_hw->ints0 = 1u << dma_ch_in_data;
@@ -51,35 +60,45 @@ static void dma_in_handler() {
 
 int main(int argc, const char** argv) {
 
+
     unsigned long fs = 48000;
     unsigned long sck_mult = 384;
     unsigned long sck_freq = sck_mult * fs;
     // Pin to be allocated to I2S SCK (output to CODEC)
     // GP10 is physical pin 14
     uint sck_pin = 10;
+    // Pin to be allocated to ~RST
+    uint rst_pin = 5;
     // Pin to be allocated to I2S DIN (input from)
     uint din_pin = 6;
     // This was chosen because it gives an even division to 
     // sck_freq.
-    unsigned long system_clock_khz = 129600;
+    //unsigned long system_clock_khz = 129600;
+    // This value was chosen in order to get a multiple of 48,000
+    unsigned long system_clock_khz = 125000;
 
     // Adjust system clock to more evenly divide the 
     // audio sampling frequency.
     set_sys_clock_khz(system_clock_khz, true);
 
     stdio_init_all();
+
     gpio_init(LED_PIN);
     gpio_set_dir(LED_PIN, GPIO_OUT);
 
-    // Startup ID
-    //for (uint i = 0; i < 2; i++) {
-    //    gpio_put(LED_PIN, 1);
-        sleep_ms(500);
-    //    gpio_put(LED_PIN, 0);
-        sleep_ms(500);
-    //}    
+    gpio_init(rst_pin);
+    gpio_set_dir(rst_pin, GPIO_OUT);
+    gpio_put(rst_pin, 1);
 
-    puts("I2C Demo");
+    // Startup ID
+    sleep_ms(500);
+    puts("I2S Demo");
+
+    // Reset the CODEC
+    gpio_put(rst_pin, 0);
+    sleep_ms(100);
+    gpio_put(rst_pin, 1);
+    sleep_ms(100);
 
     // ----- SCK Setup ------------------------------------------------------
 
@@ -115,16 +134,18 @@ int main(int argc, const char** argv) {
     // Hook it all together.  (But this does not enable the SM!)
     pio_sm_init(pio0, sck_sm, sck_program_offset, &sck_sm_config);
 
-    // Adjust state-machine clock divisor.  Remeber that we want 
-    // teh state machine to run at 2x SCK speed since it takes two 
+    // Adjust state-machine clock divisor.  Remeber that we need
+    // the state machine to run at 2x SCK speed since it takes two 
     // instructions to acheive one clock transition on the pin.
     //
     // NOTE: The clock divisor is in 16:8 format
     //
     // d d d d d d d d d d d d d d d d . f f f f f f f f
     //            Integer Part         |  Fraction Part
-    unsigned int sck_sm_clock_d = 3;
-    unsigned int sck_sm_clock_f = 132;
+    unsigned int sck_sm_clock_d = 4;
+    //unsigned int sck_sm_clock_f = 132;
+    // Avoid jitter by avoiding fractional clock division.
+    unsigned int sck_sm_clock_f = 0;
     // Sanity check:
     // 2 * (3 + (132/256)) = 7.03125
     // 7.03125 * 48,000 * 384 = 129,600,000
@@ -192,10 +213,10 @@ int main(int argc, const char** argv) {
     //
     // d d d d d d d d d d d d d d d d . f f f f f f f f
     //            Integer Part         |  Fraction Part
-    unsigned int din_sm_clock_d = 5;
-    unsigned int din_sm_clock_f = 70;
+    //unsigned int din_sm_clock_d = 5;
+    //unsigned int din_sm_clock_f = 70;
     pio_sm_set_clkdiv_int_frac(pio0, din_sm, 
-        din_sm_clock_d, din_sm_clock_f);
+        sck_sm_clock_d, sck_sm_clock_f);
 
     // ----- DMA setup -------------------------------------------
 
@@ -286,7 +307,18 @@ int main(int argc, const char** argv) {
         sleep_ms(500);
         gpio_put(LED_PIN, 0);
         sleep_ms(500);
-        printf("dma_counter_0/1/2=%d/%d/%d\n", dma_counter_0, dma_counter_1, dma_counter_2);
+
+        // Analyze the buffers
+        float mag_l = 0;
+        float mag_r = 0;
+        for (int i = 0; i < AN_BUFFER_SIZE; i++) {
+            mag_l += fabs(an_buffer_l[i]);
+            mag_r += fabs(an_buffer_r[i]);
+        }
+        mag_l /= (float)AN_BUFFER_SIZE;
+        mag_r /= (float)AN_BUFFER_SIZE;
+
+        printf("dma_counter_0=%d  l=%f r=%f\n", dma_counter_0, mag_l, mag_r);
     }
 
     return 0;

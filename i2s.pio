@@ -88,4 +88,3 @@ sample_r:
 ; collecting the right-side word.    
 ; There's an implicit jump to start_sample_l here.
 .wrap
-
