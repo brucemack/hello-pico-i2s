@@ -20,8 +20,8 @@ static uint dma_ch_in_ctrl = 0;
 static uint dma_ch_in_data = 0;
 
 static volatile uint32_t dma_counter_0 = 0;
-static volatile uint32_t dma_counter_1 = 0;
-static volatile uint32_t dma_counter_2 = 0;
+static volatile int32_t dma_counter_1 = 0;
+static volatile int32_t dma_counter_2 = 0;
 
 static void dma_in_handler() {   
     dma_counter_0++;
@@ -29,11 +29,21 @@ static void dma_in_handler() {
     // loading.
     if (dma_hw->ch[dma_ch_in_data].write_addr == 
         (uint32_t)audio_buffer) {
-        dma_counter_1++;
+        // First sample on each side
+        dma_counter_1 = audio_buffer[0];
+        // Shift away the unused bits (sign preserved)
+        dma_counter_1 = dma_counter_1 >> 8;
+        dma_counter_2 = audio_buffer[1];
+        dma_counter_2 = dma_counter_2 >> 8;
     }
     else if (dma_hw->ch[dma_ch_in_data].write_addr == 
         (uint32_t)&(audio_buffer[AUDIO_BUFFER_SIZE])) {
-        dma_counter_2++;
+        // First sample on each side
+        dma_counter_1 = audio_buffer[AUDIO_BUFFER_SIZE + 0];
+        // Shift away the unused bits (sign preserved)
+        dma_counter_1 = dma_counter_1 >> 8;
+        dma_counter_2 = audio_buffer[AUDIO_BUFFER_SIZE + 1];
+        dma_counter_2 = dma_counter_2 >> 8;
     }
     // Clear the IRQ status
     dma_hw->ints0 = 1u << dma_ch_in_data;
@@ -177,11 +187,15 @@ int main(int argc, const char** argv) {
     // Adjust state-machine clock divisor.  The speed is somewhat
     // arbitrary here, so long as it is fast enough to see the 
     // transitions on BCK and LRCK.  We run it at the same speed as the 
-    // SCK state machine.
     //
     // NOTE: The clock divisor is in 16:8 format
     //
-    pio_sm_set_clkdiv_int_frac(pio0, din_sm, sck_sm_clock_d, sck_sm_clock_f);
+    // d d d d d d d d d d d d d d d d . f f f f f f f f
+    //            Integer Part         |  Fraction Part
+    unsigned int din_sm_clock_d = 5;
+    unsigned int din_sm_clock_f = 70;
+    pio_sm_set_clkdiv_int_frac(pio0, din_sm, 
+        din_sm_clock_d, din_sm_clock_f);
 
     // ----- DMA setup -------------------------------------------
 

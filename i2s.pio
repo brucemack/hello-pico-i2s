@@ -38,7 +38,7 @@ start_sample_l:
 ; DIN has been mapped as input pin 0.
     in pins, 1
 ; Put the received data in the ISR onto the RX FIFO. 
-; The ISR is cleared.
+; The ISR is cleared automatically.
     push noblock
 ; Wait for the falling transition of the BCK
     wait 0 pin 1
