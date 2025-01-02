@@ -3,11 +3,14 @@
 
 #include "hardware/clocks.h"
 #include "hardware/dma.h"
+#include "hardware/sync.h"
 #include "pico/stdlib.h"
 #include "i2s.pio.h"
 
 #include "radlib/util/dsp_util.h"
 #include "radlib/util/f32_fft.h"
+
+#include <cstring>
 
 using namespace radlib;
 
@@ -40,30 +43,26 @@ static uint an_buffer_ptr = 0;
 // control channel's update of .write_addr.
 static void dma_in_handler() {   
 
-    if (dma_counter_0 < 3) {
+    // Figure out which part of the double-buffer we just finished
+    // loading into.  Notice: the pointer is signed.
+    int32_t* audio_data;
+    if (dma_counter_0 % 2 == 0) {
+        audio_data = (int32_t*)audio_buffer;
+        dma_counter_1++;
+    } else {
+        audio_data = (int32_t*)&(audio_buffer[AUDIO_BUFFER_SIZE]);
+    }
 
-        // Figure out which part of the double-buffer we just finished
-        // loading into.  Notice: the pointer is signed.
-        int32_t* audio_data;
-        if (dma_counter_0 % 2 == 0) {
-            audio_data = (int32_t*)audio_buffer;
-            dma_counter_1++;
-        } else {
-            audio_data = (int32_t*)&(audio_buffer[AUDIO_BUFFER_SIZE]);
-        }
-
-        // Move into analysis buffer
-        for (int i = 0; i < AUDIO_BUFFER_SIZE; i += 2) {
-            // The 24-bit value is left-justified in the 32-bit word, 
-            // so we need to shift right 8. Sign extension is automatic.
-            // TODO: FIGURE OUT WHAT LEFT AND RIGHT ARE
-            an_buffer_l[an_buffer_ptr] = audio_data[i + 1] >> 8;
-            an_buffer_r[an_buffer_ptr] = audio_data[i] >> 8;
-            // Increment and wrap
-            an_buffer_ptr++;
-            if (an_buffer_ptr == AN_BUFFER_SIZE) 
-                an_buffer_ptr = 0;
-        }
+    // Move into analysis buffer
+    for (int i = 0; i < AUDIO_BUFFER_SIZE; i += 2) {
+        // The 24-bit value is left-justified in the 32-bit word, 
+        // so we need to shift right 8. Sign extension is automatic.
+        an_buffer_l[an_buffer_ptr] = audio_data[i + 1] >> 8;
+        an_buffer_r[an_buffer_ptr] = audio_data[i] >> 8;
+        // Increment and wrap
+        an_buffer_ptr++;
+        if (an_buffer_ptr == AN_BUFFER_SIZE) 
+            an_buffer_ptr = 0;
     }
 
     // Clear the IRQ status
@@ -382,36 +381,37 @@ int main(int argc, const char** argv) {
         gpio_put(LED_PIN, 0);
         sleep_ms(500);
 
+        // Grab a copy of the structure that may be changing 
+        // inside of an ISR.
+        float an_buffer_l_copy[AN_BUFFER_SIZE];
+        uint32_t in = save_and_disable_interrupts();
+        std::memcpy(an_buffer_l_copy, an_buffer_l, AN_BUFFER_SIZE * sizeof(float));
+        restore_interrupts(in);
+
         // Analyze the buffers
-        float mag_l = 0;
-        float mag_r = 0;
+        float max_mag = 0;
         for (int i = 0; i < work_size; i++) {
-            mag_l += fabs(an_buffer_l[i]);
-            mag_r += fabs(an_buffer_r[i]);
-            //work[i].r = an_buffer_l[i];
-            //work[i].i = 0;
+            work[i].r = an_buffer_l_copy[i];
+            work[i].i = 0;
+            if (fabs(an_buffer_l_copy[i]) > max_mag)
+                max_mag = fabs(an_buffer_l_copy[i]);
         }
-        mag_l /= (float)AN_BUFFER_SIZE;
-        mag_r /= (float)AN_BUFFER_SIZE;
 
         //printf("dma_counter_0/_01=%d/%d\n", dma_counter_0, dma_counter_1);
-        //printf("dma_counter_0=%d  l=%f r=%f\n", dma_counter_0, mag_l, mag_r);
 
         // FFT stuff
-        //fft.transform(work);
-        //uint maxIdx = maxMagIdx(work, 0, work_size / 2);
-        //printf("FFT max bin %d\n", maxIdx);
-        
+        fft.transform(work);
+        uint maxIdx = maxMagIdx(work, 0, work_size / 2);
+        printf("Max mag %d, FFT max bin %d, mag %d\n", 
+            (int)max_mag, maxIdx, (int)work[maxIdx].mag());
+
         // TEMP
-        int c = getchar_timeout_us(0);
-        if (c > 0) {
-            printf("===========================\n");
-            for (int i = 0; i < work_size; i++) 
-                printf("%f\n", an_buffer_l[i]);
-            //printf("===========================\n");
-            //for (int i = 0; i < work_size; i++) 
-            //    printf("%f\n", an_buffer_r[i]);
-        }
+        //int c = getchar_timeout_us(0);
+        //if (c > 0) {
+        //    printf("===========================\n");
+        //    for (int i = 0; i < work_size; i++) 
+        //        printf("%f\n", an_buffer_l_copy[i]);
+        //}
     }
 
     return 0;
