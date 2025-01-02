@@ -10,6 +10,8 @@
 
 .program i2s_din
 
+    set x, 31
+
 ; Wait for the falling transition of the LRCK.  This 
 ; ensures that we always start at the beginning of a
 ; left-side word.
@@ -25,8 +27,8 @@
 ; is really just the end of the right-side word`.
 start_sample_l:
 ; DEBUG
-    set pins, 1
-    set pins, 0
+;    set pins, 1
+;    set pins, 0
 ; Wait for the rising transition of the BCK
 ; Parameter 0: "1" means wait for a 1.
 ; Parameter 1: "pin" means waiting on a mapped pin.
@@ -38,6 +40,8 @@ start_sample_l:
 ; Parameter 1: "1" means 1 bit is read
 ; DIN has been mapped as input pin 0.
     in pins, 1
+    ; TEMP
+    ;in x, 1
 ; Put the received data in the ISR onto the RX FIFO. 
 ; The ISR is cleared automatically.
     push noblock
@@ -48,6 +52,8 @@ sample_l:
     wait 1 pin 1
 ; Pull a bit from the DIN pin
     in pins, 1
+    ; TEMP
+    ;in x, 1
 ; Wait for the falling transition of the BCK
     wait 0 pin 1
 ; If the LRCK goes high then we're (almost) finished 
@@ -61,13 +67,15 @@ sample_l:
     jmp sample_l 
 start_sample_r:
 ; DEBUG
-    set pins, 1
-    set pins, 0
+;    set pins, 1
+;    set pins, 0
 ; Wait for the rising transition of the BCLK
     wait 1 pin 1
 ; Pull a bit from the DIN pin.  This will be the LSB of 
 ; the previous left-side word.
     in pins, 1 
+    ; TEMP
+    ;in x, 1
 ; Put the received data onto the FIFO
     push noblock
 ; Wait for the falling transition of the BCK
@@ -77,6 +85,8 @@ sample_r:
     wait 1 pin 1 
 ; Pull a bit from the DIN pin
     in pins, 1
+    ; TEMP
+    ;in x, 1
 ; Wait for the falling transition of the BCK
     wait 0 pin 1
 ; If LRCK is still high we're still sampling the right 
