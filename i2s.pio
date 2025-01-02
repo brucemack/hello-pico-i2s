@@ -9,7 +9,6 @@
 ; Input pins are sequential in this order: DIN, BCLK, LRCLK.
 
 .program i2s_din
-.wrap_target
 
 ; Wait for the falling transition of the LRCK.  This 
 ; ensures that we always start at the beginning of a
@@ -25,7 +24,9 @@
 ; Here we deal with the first bit of the L window, which 
 ; is really just the end of the right-side word`.
 start_sample_l:
-
+; DEBUG
+    set pins, 1
+    set pins, 0
 ; Wait for the rising transition of the BCK
 ; Parameter 0: "1" means wait for a 1.
 ; Parameter 1: "pin" means waiting on a mapped pin.
@@ -42,8 +43,6 @@ start_sample_l:
     push noblock
 ; Wait for the falling transition of the BCK
     wait 0 pin 1
-; Confirm the falling transition of the LRCK
-    wait 0 pin 2
 sample_l:
 ; Wait for the rising transition of the BCK
     wait 1 pin 1
@@ -61,6 +60,9 @@ sample_l:
 ; Otherwise keep looping through the left-side word collection.
     jmp sample_l 
 start_sample_r:
+; DEBUG
+    set pins, 1
+    set pins, 0
 ; Wait for the rising transition of the BCLK
     wait 1 pin 1
 ; Pull a bit from the DIN pin.  This will be the LSB of 
@@ -86,5 +88,4 @@ sample_r:
     jmp pin sample_r    
 ; If the LRCK pin was low then we are (almost) finished
 ; collecting the right-side word.    
-; There's an implicit jump to start_sample_l here.
-.wrap
+    jmp start_sample_l
