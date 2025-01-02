@@ -1,3 +1,22 @@
+/**
+ * Pico I2S Demonstration
+ * Copyright (C) 2025, Bruce MacKinnon
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ *
+ * NOT FOR COMMERCIAL USE WITHOUT PERMISSION.
+ */
 #include <stdio.h>
 #include <math.h>
 
@@ -30,7 +49,6 @@ static uint dma_ch_in_ctrl = 0;
 static uint dma_ch_in_data = 0;
 
 static volatile uint32_t dma_counter_0 = 0;
-static volatile uint32_t dma_counter_1 = 0;
 
 #define AN_BUFFER_SIZE (256)
 
@@ -48,17 +66,16 @@ static void dma_in_handler() {
     int32_t* audio_data;
     if (dma_counter_0 % 2 == 0) {
         audio_data = (int32_t*)audio_buffer;
-        dma_counter_1++;
     } else {
         audio_data = (int32_t*)&(audio_buffer[AUDIO_BUFFER_SIZE]);
     }
 
     // Move into analysis buffer
     for (int i = 0; i < AUDIO_BUFFER_SIZE; i += 2) {
-        // The 24-bit value is left-justified in the 32-bit word, 
+        // The 24-bit signed value is left-justified in the 32-bit word, 
         // so we need to shift right 8. Sign extension is automatic.
-        an_buffer_l[an_buffer_ptr] = audio_data[i + 1] >> 8;
         an_buffer_r[an_buffer_ptr] = audio_data[i] >> 8;
+        an_buffer_l[an_buffer_ptr] = audio_data[i + 1] >> 8;
         // Increment and wrap
         an_buffer_ptr++;
         if (an_buffer_ptr == AN_BUFFER_SIZE) 
@@ -83,10 +100,6 @@ int main(int argc, const char** argv) {
     uint rst_pin = 5;
     // Pin to be allocated to I2S DIN (input from)
     uint din_pin = 6;
-    // This was chosen because it gives an even division to 
-    // sck_freq.
-    //unsigned long system_clock_khz = 129600;
-    // This value was chosen in order to get a multiple of 48,000
     unsigned long system_clock_khz = 125000;
 
     // Adjust system clock to more evenly divide the 
@@ -104,30 +117,14 @@ int main(int argc, const char** argv) {
 
     // Startup ID
     sleep_ms(500);
-    sleep_ms(500);
     puts("I2S Demo");
-    printf("Audio Buffer %d\n", (uint32_t)audio_buffer);
 
-    for (int i = 0; i < AUDIO_BUFFER_SIZE; i++)
-        audio_buffer[i] = 10;    
-    for (int i = 0; i < AN_BUFFER_SIZE; i++) {
-        an_buffer_l[i] = 20;
-        an_buffer_r[i] = 30;
-    }
-
-    // ===== TEMP ===========================================================
-    // Assuming an SCK PIO divisor of 4 and an SCK = fs * 384
+    // Assuming a system freq of 125 MHz, an SCK PIO divisor of 4 
+    // and an SCK = fs * 384.
     float sample_freq = 40690;
     const uint work_size = 256;
-    cf32 work[work_size];
     float trigSpace[work_size];
     F32FFT fft(work_size, trigSpace);
-    // Test
-    //make_complex_tone_cf32(work, work_size, 
-    //    sample_freq, 1000, 1.0); 
-    //fft.transform(work);
-    //uint maxIdx = maxMagIdx(work, 0, work_size / 2);
-    //printf("Max %d\n", maxIdx);
 
     // Reset the CODEC
     gpio_put(rst_pin, 0);
@@ -257,7 +254,7 @@ int main(int argc, const char** argv) {
     sm_config_set_in_shift(&din_sm_config, false, false, 0);
     // Merge the FIFOs since we are only doing RX.  This gives us 
     // 8 words of buffer instead of the usual 4.
-    //sm_config_set_fifo_join(&din_sm_config, PIO_FIFO_JOIN_RX);
+    sm_config_set_fifo_join(&din_sm_config, PIO_FIFO_JOIN_RX);
 
     // Initialize the direction of the pins before SM is enabled
     // There are four pins in the mask here. 
@@ -370,7 +367,7 @@ int main(int argc, const char** argv) {
     // the data DMA channel in turn.
     dma_channel_start(dma_ch_in_ctrl);
 
-    // Final enable of the two SMs
+    // Final enable of the two SMs to keep them in sync.
     pio_enable_sm_mask_in_sync(pio0, sck_sm_mask | din_sm_mask);
 
     // Endless loop
@@ -383,12 +380,14 @@ int main(int argc, const char** argv) {
 
         // Grab a copy of the structure that may be changing 
         // inside of an ISR.
+        // IMPORTANT: Interrupts are disabled during the copy!
         float an_buffer_l_copy[AN_BUFFER_SIZE];
         uint32_t in = save_and_disable_interrupts();
         std::memcpy(an_buffer_l_copy, an_buffer_l, AN_BUFFER_SIZE * sizeof(float));
         restore_interrupts(in);
 
         // Analyze the buffers
+        cf32 work[work_size];
         float max_mag = 0;
         for (int i = 0; i < work_size; i++) {
             work[i].r = an_buffer_l_copy[i];
@@ -404,15 +403,7 @@ int main(int argc, const char** argv) {
         uint maxIdx = maxMagIdx(work, 0, work_size / 2);
         printf("Max mag %d, FFT max bin %d, mag %d\n", 
             (int)max_mag, maxIdx, (int)work[maxIdx].mag());
-
-        // TEMP
-        //int c = getchar_timeout_us(0);
-        //if (c > 0) {
-        //    printf("===========================\n");
-        //    for (int i = 0; i < work_size; i++) 
-        //        printf("%f\n", an_buffer_l_copy[i]);
-        //}
-    }
+   }
 
     return 0;
 }

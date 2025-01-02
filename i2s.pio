@@ -1,16 +1,37 @@
+/**
+ * Pico I2S Demonstration
+ * Copyright (C) 2025, Bruce MacKinnon
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ *
+ * NOT FOR COMMERCIAL USE WITHOUT PERMISSION.
+ */
+; ================================================================
 ; Program for generating system clock
+
 .program i2s_sck
 .wrap_target
     set pins, 1
     set pins, 0
 .wrap
 
+; ================================================================
 ; Program for receiving I2S audio data from master CODEC.
 ; Input pins are sequential in this order: DIN, BCLK, LRCLK.
+; Output pin is: DEBUG
 
 .program i2s_din
-
-    set x, 31
 
 ; Wait for the falling transition of the LRCK.  This 
 ; ensures that we always start at the beginning of a
@@ -25,10 +46,11 @@
 
 ; Here we deal with the first bit of the L window, which 
 ; is really just the end of the right-side word`.
+
 start_sample_l:
 ; DEBUG
-;    set pins, 1
-;    set pins, 0
+    set pins, 1
+    set pins, 0
 ; Wait for the rising transition of the BCK
 ; Parameter 0: "1" means wait for a 1.
 ; Parameter 1: "pin" means waiting on a mapped pin.
@@ -40,20 +62,17 @@ start_sample_l:
 ; Parameter 1: "1" means 1 bit is read
 ; DIN has been mapped as input pin 0.
     in pins, 1
-    ; TEMP
-    ;in x, 1
 ; Put the received data in the ISR onto the RX FIFO. 
 ; The ISR is cleared automatically.
     push noblock
 ; Wait for the falling transition of the BCK
     wait 0 pin 1
+
 sample_l:
 ; Wait for the rising transition of the BCK
     wait 1 pin 1
 ; Pull a bit from the DIN pin
     in pins, 1
-    ; TEMP
-    ;in x, 1
 ; Wait for the falling transition of the BCK
     wait 0 pin 1
 ; If the LRCK goes high then we're (almost) finished 
@@ -65,28 +84,29 @@ sample_l:
     jmp pin start_sample_r
 ; Otherwise keep looping through the left-side word collection.
     jmp sample_l 
+
+; Here we deal with the first bit of the R window, which 
+; is really just the end of the left-side word`.
+
 start_sample_r:
 ; DEBUG
-;    set pins, 1
-;    set pins, 0
+    set pins, 1
+    set pins, 0
 ; Wait for the rising transition of the BCLK
     wait 1 pin 1
 ; Pull a bit from the DIN pin.  This will be the LSB of 
 ; the previous left-side word.
     in pins, 1 
-    ; TEMP
-    ;in x, 1
 ; Put the received data onto the FIFO
     push noblock
 ; Wait for the falling transition of the BCK
     wait 0 pin 1
+
 sample_r:
 ; Wait for the rising transition of the BCK
     wait 1 pin 1 
-; Pull a bit from the DIN pin
+; Pull a bit from the DIN pin and shift into the ISR
     in pins, 1
-    ; TEMP
-    ;in x, 1
 ; Wait for the falling transition of the BCK
     wait 0 pin 1
 ; If LRCK is still high we're still sampling the right 
